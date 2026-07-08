@@ -1,0 +1,11 @@
+packages:
+  - .
+minimumReleaseAge: 0
+minimumReleaseAgeExclude:
+  - '@types/node@26.1.1'
+allowBuilds:
+  sharp: true
+  unrs-resolver: true
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
