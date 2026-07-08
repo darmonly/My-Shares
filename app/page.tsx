@@ -29,19 +29,93 @@ type AlertRule = {
 const DEFAULT_SYMBOLS = ['NVDA', 'SPCX', 'MSFT', 'TSLA', 'AAPL'];
 const COLORS = ['#a78bfa', '#22d3ee', '#fb923c', '#4ade80', '#f87171', '#60a5fa', '#f472b6', '#bef264'];
 
-type MarketResponse = {
-  quotes: Quote[];
-  history: Record<string, HistoryPoint[]>;
-  error?: string;
+type StooqQuote = {
+  symbol?: string;
+  name?: string;
+  date?: string;
+  time?: string;
+  open?: string;
+  high?: string;
+  low?: string;
+  close?: string;
+  volume?: string;
 };
 
-async function loadMarketData(symbols: string[]) {
-  const params = new URLSearchParams({ symbols: symbols.join(',') });
-  const response = await fetch(`/api/market?${params.toString()}`);
-  const payload: MarketResponse = await response.json();
+const STOOQ_QUOTE_URL = 'https://stooq.com/q/l/';
+const STOOQ_HISTORY_URL = 'https://stooq.com/q/d/l/';
 
-  if (!response.ok || payload.error) throw new Error(payload.error ?? 'Could not load market data.');
-  return payload;
+function toStooqSymbol(symbol: string) {
+  const clean = symbol.trim().toLowerCase().replace(/[^a-z0-9.\-]/g, '');
+  return clean.includes('.') ? clean : `${clean}.us`;
+}
+
+function fromStooqSymbol(symbol: string) {
+  return symbol.toUpperCase().replace(/\.US$/, '');
+}
+
+function startDate(days: number) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+function parseHistory(csv: string) {
+  const [headerLine, ...lines] = csv.trim().split('\n');
+  if (!headerLine || headerLine.includes('No data')) return [];
+
+  const headers = headerLine.split(',');
+  return lines
+    .map((line) => {
+      const values = line.split(',');
+      return Object.fromEntries(headers.map((header, index) => [header.toLowerCase(), values[index]]));
+    })
+    .filter((row) => row.date && row.close && row.close !== 'N/D')
+    .map((row) => ({
+      date: row.date,
+      close: Number(row.close)
+    }));
+}
+
+async function loadQuotes(symbols: string[]) {
+  const stooqSymbols = symbols.map(toStooqSymbol);
+  const params = new URLSearchParams({ s: stooqSymbols.join(','), f: 'sd2t2ohlcvn', h: '', e: 'json' });
+  const response = await fetch(`${STOOQ_QUOTE_URL}?${params.toString()}`);
+  if (!response.ok) throw new Error('Could not load quotes from Stooq.');
+
+  const payload = await response.json();
+  const rows: StooqQuote[] = Array.isArray(payload.symbols) ? payload.symbols : [payload.symbols].filter(Boolean);
+
+  return rows
+    .filter((row) => row.close && row.close !== 'N/D')
+    .map((row) => ({
+      symbol: fromStooqSymbol(row.symbol ?? ''),
+      name: row.name ?? fromStooqSymbol(row.symbol ?? ''),
+      date: row.date ?? '',
+      time: row.time ?? '',
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Number(row.volume)
+    }));
+}
+
+async function loadHistory(symbol: string, days = 365) {
+  const params = new URLSearchParams({ s: toStooqSymbol(symbol), d1: startDate(days), i: 'd' });
+  const response = await fetch(`${STOOQ_HISTORY_URL}?${params.toString()}`);
+  if (!response.ok) return [];
+  return parseHistory(await response.text());
+}
+
+async function loadMarketData(symbols: string[]) {
+  if (symbols.length === 0) return { quotes: [], history: {} };
+
+  const [quotes, histories] = await Promise.all([
+    loadQuotes(symbols),
+    Promise.all(symbols.map(async (symbol) => [symbol, await loadHistory(symbol)] as const))
+  ]);
+
+  return { quotes, history: Object.fromEntries(histories) };
 }
 
 function historyBounds(points: HistoryPoint[]) {
@@ -184,7 +258,7 @@ export default function Home() {
           <p className="eyebrow">Public GitHub Pages share tracker</p>
           <h1>Track shares, review separate charts, and get price notices while the site is open.</h1>
           <p>
-            Uses a same-origin market data route, so browser CORS blocks stay away from the dashboard.
+            Uses free Stooq market data directly from your browser, so the site can be exported as static files.
             Initial shares include NVDA, SPCX, MSFT, TSLA, and AAPL.
           </p>
         </div>
