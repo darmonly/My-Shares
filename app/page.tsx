@@ -1,16 +1,7 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts';
+import { FormEvent, useEffect, useState } from 'react';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 type Quote = {
   symbol: string;
@@ -35,84 +26,31 @@ type AlertRule = {
   max: string;
 };
 
-type StooqQuote = {
-  symbol?: string;
-  name?: string;
-  date?: string;
-  time?: string;
-  open?: string;
-  high?: string;
-  low?: string;
-  close?: string;
-  volume?: string;
+const DEFAULT_SYMBOLS = ['NVDA', 'SPCX', 'MSFT', 'TSLA', 'AAPL'];
+const COLORS = ['#a78bfa', '#22d3ee', '#fb923c', '#4ade80', '#f87171', '#60a5fa', '#f472b6', '#bef264'];
+
+type MarketResponse = {
+  quotes: Quote[];
+  history: Record<string, HistoryPoint[]>;
+  error?: string;
 };
 
-const DEFAULT_SYMBOLS = ['NVDA', 'SPCX', 'MSFT', 'TSLA', 'AAPL'];
-const COLORS = ['#7c3aed', '#0891b2', '#f97316', '#16a34a', '#dc2626', '#2563eb', '#db2777', '#65a30d'];
-const STOOQ_QUOTE_URL = 'https://stooq.com/q/l/';
-const STOOQ_HISTORY_URL = 'https://stooq.com/q/d/l/';
+async function loadMarketData(symbols: string[]) {
+  const params = new URLSearchParams({ symbols: symbols.join(',') });
+  const response = await fetch(`/api/market?${params.toString()}`);
+  const payload: MarketResponse = await response.json();
 
-function toStooqSymbol(symbol: string) {
-  const clean = symbol.trim().toLowerCase().replace(/[^a-z0-9.\-]/g, '');
-  return clean.includes('.') ? clean : `${clean}.us`;
+  if (!response.ok || payload.error) throw new Error(payload.error ?? 'Could not load market data.');
+  return payload;
 }
 
-function fromStooqSymbol(symbol: string) {
-  return symbol.toUpperCase().replace(/\.US$/, '');
-}
-
-function startDate(days: number) {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - days);
-  return date.toISOString().slice(0, 10).replaceAll('-', '');
-}
-
-function parseHistory(csv: string) {
-  const [headerLine, ...lines] = csv.trim().split('\n');
-  if (!headerLine || headerLine.includes('No data')) return [];
-
-  const headers = headerLine.split(',');
-  return lines
-    .map((line) => {
-      const values = line.split(',');
-      return Object.fromEntries(headers.map((header, index) => [header.toLowerCase(), values[index]]));
-    })
-    .filter((row) => row.date && row.close && row.close !== 'N/D')
-    .map((row) => ({
-      date: row.date,
-      close: Number(row.close)
-    }));
-}
-
-async function loadQuotes(symbols: string[]) {
-  const stooqSymbols = symbols.map(toStooqSymbol);
-  const params = new URLSearchParams({ s: stooqSymbols.join(','), f: 'sd2t2ohlcvn', h: '', e: 'json' });
-  const response = await fetch(`${STOOQ_QUOTE_URL}?${params.toString()}`);
-  if (!response.ok) throw new Error('Could not load quotes from Stooq.');
-
-  const payload = await response.json();
-  const rows: StooqQuote[] = Array.isArray(payload.symbols) ? payload.symbols : [payload.symbols].filter(Boolean);
-
-  return rows
-    .filter((row) => row.close && row.close !== 'N/D')
-    .map((row) => ({
-      symbol: fromStooqSymbol(row.symbol ?? ''),
-      name: row.name ?? fromStooqSymbol(row.symbol ?? ''),
-      date: row.date ?? '',
-      time: row.time ?? '',
-      open: Number(row.open),
-      high: Number(row.high),
-      low: Number(row.low),
-      close: Number(row.close),
-      volume: Number(row.volume)
-    }));
-}
-
-async function loadHistory(symbol: string, days = 365) {
-  const params = new URLSearchParams({ s: toStooqSymbol(symbol), d1: startDate(days), i: 'd' });
-  const response = await fetch(`${STOOQ_HISTORY_URL}?${params.toString()}`);
-  if (!response.ok) return [];
-  return parseHistory(await response.text());
+function historyBounds(points: HistoryPoint[]) {
+  const closes = points.map((point) => point.close).filter(Number.isFinite);
+  if (closes.length === 0) return { min: '', max: '' };
+  return {
+    min: Math.min(...closes).toFixed(2),
+    max: Math.max(...closes).toFixed(2)
+  };
 }
 
 export default function Home() {
@@ -125,13 +63,16 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lastNotified, setLastNotified] = useState<Record<string, string>>({});
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   useEffect(() => {
     const savedSymbols = window.localStorage.getItem('share-symbols');
     const savedAlerts = window.localStorage.getItem('share-alerts');
+    const savedTheme = window.localStorage.getItem('share-theme');
 
     if (savedSymbols) setSymbols(JSON.parse(savedSymbols));
     if (savedAlerts) setAlerts(JSON.parse(savedAlerts));
+    if (savedTheme === 'dark' || savedTheme === 'light') setTheme(savedTheme);
     if ('Notification' in window) setNotificationStatus(`Browser notifications are ${Notification.permission}.`);
   }, []);
 
@@ -144,26 +85,37 @@ export default function Home() {
   }, [alerts]);
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem('share-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadData() {
       setLoading(true);
       setError('');
       try {
-        const [quoteRows, histories] = await Promise.all([
-          loadQuotes(symbols),
-          Promise.all(symbols.map(async (symbol) => [symbol, await loadHistory(symbol)] as const))
-        ]);
+        const marketData = await loadMarketData(symbols);
 
         if (!cancelled) {
-          setQuotes(quoteRows);
-          setHistory(Object.fromEntries(histories));
+          setQuotes(marketData.quotes);
+          setHistory(marketData.history);
+          setAlerts((current) => {
+            const next = { ...current };
+            for (const symbol of symbols) {
+              if (!next[symbol] || (!next[symbol].min && !next[symbol].max)) {
+                next[symbol] = { ...historyBounds(marketData.history[symbol] ?? []), ...next[symbol] };
+              }
+            }
+            return next;
+          });
         }
       } catch (issue) {
         if (!cancelled) {
           setError(
             issue instanceof Error
-              ? `${issue.message} If this happens on GitHub Pages, the free provider may be blocking browser requests. Try again later or use a different symbol.`
+              ? issue.message
               : 'Something went wrong.'
           );
         }
@@ -205,20 +157,6 @@ export default function Home() {
     });
   }, [alerts, lastNotified, quotes]);
 
-  const chartData = useMemo(() => {
-    const rows = new Map<string, HistoryPoint>();
-
-    for (const symbol of symbols) {
-      for (const point of history[symbol] ?? []) {
-        const row = rows.get(point.date) ?? { date: point.date, close: point.close };
-        row[symbol] = point.close;
-        rows.set(point.date, row);
-      }
-    }
-
-    return Array.from(rows.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-  }, [history, symbols]);
-
   async function requestNotifications() {
     if (!('Notification' in window)) {
       setNotificationStatus('This browser does not support notifications.');
@@ -244,13 +182,18 @@ export default function Home() {
       <section className="hero">
         <div>
           <p className="eyebrow">Public GitHub Pages share tracker</p>
-          <h1>Track shares, compare charts, and get price notices while the site is open.</h1>
+          <h1>Track shares, review separate charts, and get price notices while the site is open.</h1>
           <p>
-            Uses the free Stooq market data feed directly from the browser, so the site can be hosted on GitHub Pages with no backend and no API key.
+            Uses a same-origin market data route, so browser CORS blocks stay away from the dashboard.
             Initial shares include NVDA, SPCX, MSFT, TSLA, and AAPL.
           </p>
         </div>
-        <button onClick={requestNotifications}>Enable window notices</button>
+        <div className="hero-actions">
+          <button onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))} type="button">
+            {theme === 'dark' ? 'Bright mode' : 'Dark mode'}
+          </button>
+          <button onClick={requestNotifications}>Enable window notices</button>
+        </div>
       </section>
 
       <p className="notice">{notificationStatus} Prices refresh every 60 seconds while this page is open.</p>
@@ -267,23 +210,31 @@ export default function Home() {
 
       {error && <p className="error">{error}</p>}
 
-      <section className="card chart-card">
-        <div className="section-title">
-          <h2>Multiple share graph</h2>
-          <span>{loading ? 'Loading market data...' : `${chartData.length} daily points`}</span>
-        </div>
-        <ResponsiveContainer width="100%" height={420}>
-          <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="date" minTickGap={32} />
-            <YAxis domain={['auto', 'auto']} />
-            <Tooltip formatter={(value) => `$${Number(value).toFixed(2)}`} />
-            <Legend />
-            {symbols.map((symbol, index) => (
-              <Line key={symbol} type="monotone" dataKey={symbol} stroke={COLORS[index % COLORS.length]} dot={false} strokeWidth={2} />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+      <section className="charts-grid">
+        {symbols.map((symbol, index) => {
+          const points = history[symbol] ?? [];
+          const bounds = historyBounds(points);
+          return (
+            <article className="card chart-card" key={`${symbol}-chart`}>
+              <div className="section-title">
+                <div>
+                  <h2>{symbol} graph</h2>
+                  <span>{bounds.min && bounds.max ? `Range $${bounds.min} - $${bounds.max}` : 'Waiting for history'}</span>
+                </div>
+                <span>{loading ? 'Loading...' : `${points.length} daily points`}</span>
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={points} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" minTickGap={32} />
+                  <YAxis domain={['dataMin', 'dataMax']} width={72} />
+                  <Tooltip formatter={(value) => `$${Number(value).toFixed(2)}`} />
+                  <Line type="monotone" dataKey="close" name={symbol} stroke={COLORS[index % COLORS.length]} dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </article>
+          );
+        })}
       </section>
 
       <section className="grid">
@@ -312,7 +263,7 @@ export default function Home() {
                   <input
                     type="number"
                     step="0.01"
-                    placeholder="5"
+                    placeholder={historyBounds(history[symbol] ?? []).min || "Min"}
                     value={rule.min}
                     onChange={(event) => setAlerts((current) => ({ ...current, [symbol]: { ...rule, min: event.target.value } }))}
                   />
@@ -322,7 +273,7 @@ export default function Home() {
                   <input
                     type="number"
                     step="0.01"
-                    placeholder="10"
+                    placeholder={historyBounds(history[symbol] ?? []).max || "Max"}
                     value={rule.max}
                     onChange={(event) => setAlerts((current) => ({ ...current, [symbol]: { ...rule, max: event.target.value } }))}
                   />
