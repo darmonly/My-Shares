@@ -1,0 +1,6 @@
+minimumReleaseAge: 0
+minimumReleaseAgeExclude:
+  - '@types/node@26.1.1'
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver

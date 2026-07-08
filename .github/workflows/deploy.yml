@@ -1,4 +1,4 @@
-name: Deploy NextJS site to GitHub Pages
+name: Deploy Next.js site to GitHub Pages
 
 on:
   push:
@@ -14,6 +14,10 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  NODE_OPTIONS: --max-old-space-size=6144
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,17 +25,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+          run_install: false
+
+      - name: Setup latest Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: latest
+          check-latest: true
+          cache: pnpm
+          cache-dependency-path: package.json
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          static_site_generator: next
+
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('app/**/*.[jt]s', 'app/**/*.[jt]sx', 'components/**/*.[jt]s', 'components/**/*.[jt]sx', 'lib/**/*.[jt]s', 'lib/**/*.[jt]sx', 'next.config.*', 'tsconfig.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --no-frozen-lockfile
 
-      - name: Build static NextJS app
-        run: npm run build
+      - name: Build static Next.js app
+        run: pnpm build
         env:
           NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
 
@@ -49,4 +74,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

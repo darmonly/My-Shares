@@ -1,6 +1,6 @@
 # My Shares
 
-A public NextJS website for tracking shares, comparing multiple price graphs, and receiving browser window notices when prices cross your chosen minimum or maximum levels.
+A public Next.js website for tracking shares, comparing multiple price graphs, and receiving browser window notices when prices cross your chosen minimum or maximum levels.
 
 ## Features
 
@@ -15,20 +15,21 @@ A public NextJS website for tracking shares, comparing multiple price graphs, an
 ## Run locally
 
 ```bash
-npm install
-npm run dev
+corepack enable
+pnpm install
+pnpm dev
 ```
 
 Open <http://localhost:3000> and click **Enable window notices** if you want price alerts.
 
 ## Host on GitHub Pages
 
-This repo includes `.github/workflows/deploy.yml`, which builds the static NextJS app and publishes the `out` folder to GitHub Pages.
+This repo includes `.github/workflows/deploy.yml`, which uses pnpm, the latest Node.js release, a larger Node heap, and Next.js build caching to build the static Next.js app and publishes the `out` folder to GitHub Pages.
 
 1. Push this repository to GitHub.
 2. In GitHub, open **Settings → Pages**.
 3. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-4. Push to `main`, `master`, or `work`, or manually run the workflow named **Deploy NextJS site to GitHub Pages**.
+4. Push to `main`, `master`, or `work`, or manually run the workflow named **Deploy Next.js site to GitHub Pages**.
 5. Your website will be available at `https://<your-github-user>.github.io/<repo-name>/`.
 
 The workflow sets `NEXT_PUBLIC_BASE_PATH` to the repository name, which makes the static app work under GitHub Pages project URLs such as `/My-Shares/`.
