@@ -9,7 +9,8 @@ A public Next.js website for tracking shares, comparing multiple price graphs, a
 - Compare multiple shares on one graph.
 - Set minimum and maximum price alerts per share.
 - Uses browser notifications only while the website is open.
-- Uses free Stooq market data directly from the browser, so no API key or backend server is required.
+- Uses free Stooq market data directly first, then public CORS proxy fallbacks if the browser blocks direct access.
+- Optionally supports a free Alpha Vantage API key if public no-sign-in endpoints are unavailable.
 - Exports to static HTML/CSS/JS so GitHub Pages can host it.
 
 ## Run locally
@@ -18,6 +19,12 @@ A public Next.js website for tracking shares, comparing multiple price graphs, a
 corepack enable
 pnpm install
 pnpm dev
+```
+
+Optional: if the no-sign-in Stooq/public CORS endpoints fail, sign up for a free Alpha Vantage key and run:
+
+```bash
+NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY=your_key_here pnpm dev
 ```
 
 Open <http://localhost:3000> and click **Enable window notices** if you want price alerts.

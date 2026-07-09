@@ -41,8 +41,29 @@ type StooqQuote = {
   volume?: string;
 };
 
+type AlphaVantageDailyRow = {
+  '1. open'?: string;
+  '2. high'?: string;
+  '3. low'?: string;
+  '4. close'?: string;
+  '5. volume'?: string;
+};
+
+type AlphaVantageDailyPayload = {
+  'Meta Data'?: {
+    '2. Symbol'?: string;
+  };
+  'Time Series (Daily)'?: Record<string, AlphaVantageDailyRow>;
+  Note?: string;
+  Information?: string;
+  'Error Message'?: string;
+};
+
 const STOOQ_QUOTE_URL = 'https://stooq.com/q/l/';
 const STOOQ_HISTORY_URL = 'https://stooq.com/q/d/l/';
+const ALPHA_VANTAGE_API_KEY = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY;
+const ALPHA_VANTAGE_URL = 'https://www.alphavantage.co/query';
+const MARKET_DATA_HINT = 'Could not load free market data. The app tried Stooq directly and through public CORS proxies. If those public endpoints are down, add a free Alpha Vantage key as NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY.';
 
 function toStooqSymbol(symbol: string) {
   const clean = symbol.trim().toLowerCase().replace(/[^a-z0-9.\-]/g, '');
@@ -57,6 +78,30 @@ function startDate(days: number) {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() - days);
   return date.toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+function proxyUrls(url: string) {
+  return [
+    url,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://corsproxy.io/?${encodeURIComponent(url)}`
+  ];
+}
+
+async function fetchWithFallback(url: string) {
+  const errors: string[] = [];
+
+  for (const candidate of proxyUrls(url)) {
+    try {
+      const response = await fetch(candidate);
+      if (response.ok) return response;
+      errors.push(`${new URL(candidate).hostname}: ${response.status}`);
+    } catch (issue) {
+      errors.push(`${new URL(candidate).hostname}: ${issue instanceof Error ? issue.message : 'failed'}`);
+    }
+  }
+
+  throw new Error(errors.join('; '));
 }
 
 function parseHistory(csv: string) {
@@ -76,12 +121,10 @@ function parseHistory(csv: string) {
     }));
 }
 
-async function loadQuotes(symbols: string[]) {
+async function loadStooqQuotes(symbols: string[]) {
   const stooqSymbols = symbols.map(toStooqSymbol);
   const params = new URLSearchParams({ s: stooqSymbols.join(','), f: 'sd2t2ohlcvn', h: '', e: 'json' });
-  const response = await fetch(`${STOOQ_QUOTE_URL}?${params.toString()}`);
-  if (!response.ok) throw new Error('Could not load quotes from Stooq.');
-
+  const response = await fetchWithFallback(`${STOOQ_QUOTE_URL}?${params.toString()}`);
   const payload = await response.json();
   const rows: StooqQuote[] = Array.isArray(payload.symbols) ? payload.symbols : [payload.symbols].filter(Boolean);
 
@@ -100,22 +143,71 @@ async function loadQuotes(symbols: string[]) {
     }));
 }
 
-async function loadHistory(symbol: string, days = 365) {
+async function loadStooqHistory(symbol: string, days = 365) {
   const params = new URLSearchParams({ s: toStooqSymbol(symbol), d1: startDate(days), i: 'd' });
-  const response = await fetch(`${STOOQ_HISTORY_URL}?${params.toString()}`);
-  if (!response.ok) return [];
+  const response = await fetchWithFallback(`${STOOQ_HISTORY_URL}?${params.toString()}`);
   return parseHistory(await response.text());
+}
+
+async function loadAlphaVantageDaily(symbol: string) {
+  if (!ALPHA_VANTAGE_API_KEY) return null;
+
+  const params = new URLSearchParams({
+    function: 'TIME_SERIES_DAILY',
+    symbol,
+    outputsize: 'compact',
+    apikey: ALPHA_VANTAGE_API_KEY
+  });
+  const response = await fetch(`${ALPHA_VANTAGE_URL}?${params.toString()}`);
+  if (!response.ok) return null;
+
+  const payload = (await response.json()) as AlphaVantageDailyPayload;
+  if (payload.Note || payload.Information || payload['Error Message'] || !payload['Time Series (Daily)']) return null;
+
+  const entries = Object.entries(payload['Time Series (Daily)']).sort(([left], [right]) => left.localeCompare(right));
+  const history = entries.map(([date, row]) => ({ date, close: Number(row['4. close']) })).filter((row) => Number.isFinite(row.close));
+  const [date = '', latest] = entries.at(-1) ?? [];
+
+  if (!latest) return { quote: null, history };
+
+  return {
+    quote: {
+      symbol: payload['Meta Data']?.['2. Symbol'] ?? symbol,
+      name: symbol,
+      date,
+      time: 'close',
+      open: Number(latest['1. open']),
+      high: Number(latest['2. high']),
+      low: Number(latest['3. low']),
+      close: Number(latest['4. close']),
+      volume: Number(latest['5. volume'])
+    },
+    history
+  };
+}
+
+async function loadAlphaVantageMarketData(symbols: string[]) {
+  const rows = await Promise.all(symbols.map(async (symbol) => [symbol, await loadAlphaVantageDaily(symbol)] as const));
+  const quotes = rows.map(([, data]) => data?.quote).filter((quote): quote is Quote => Boolean(quote));
+  const history = Object.fromEntries(rows.map(([symbol, data]) => [symbol, data?.history ?? []]));
+  return quotes.length > 0 ? { quotes, history } : null;
 }
 
 async function loadMarketData(symbols: string[]) {
   if (symbols.length === 0) return { quotes: [], history: {} };
 
-  const [quotes, histories] = await Promise.all([
-    loadQuotes(symbols),
-    Promise.all(symbols.map(async (symbol) => [symbol, await loadHistory(symbol)] as const))
-  ]);
+  try {
+    const [quotes, histories] = await Promise.all([
+      loadStooqQuotes(symbols),
+      Promise.all(symbols.map(async (symbol) => [symbol, await loadStooqHistory(symbol)] as const))
+    ]);
 
-  return { quotes, history: Object.fromEntries(histories) };
+    return { quotes, history: Object.fromEntries(histories) };
+  } catch {
+    const alphaVantageData = await loadAlphaVantageMarketData(symbols);
+    if (alphaVantageData) return alphaVantageData;
+    throw new Error(MARKET_DATA_HINT);
+  }
 }
 
 function historyBounds(points: HistoryPoint[]) {
@@ -258,7 +350,7 @@ export default function Home() {
           <p className="eyebrow">Public GitHub Pages share tracker</p>
           <h1>Track shares, review separate charts, and get price notices while the site is open.</h1>
           <p>
-            Uses free Stooq market data directly from your browser, so the site can be exported as static files.
+            Uses free Stooq market data with public CORS fallbacks. You can also add a free Alpha Vantage key if public endpoints are unavailable.
             Initial shares include NVDA, SPCX, MSFT, TSLA, and AAPL.
           </p>
         </div>
